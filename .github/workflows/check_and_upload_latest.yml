@@ -1,0 +1,137 @@
+name: Check latest versions and update Package.swift
+
+on:
+  push:
+    branch: main
+#  schedule:
+#    - cron: '0 0 * * *'
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v1
+
+    - name: Current latest release
+      id: latest-release
+      uses: pozetroninc/github-action-get-latest-release@master
+      with:
+        repository: ${{ github.repository }}
+
+    - name: Check latest VLCKit release
+      id: latest-vlckit-version
+      run: |
+        versions=$(curl -s http://download.videolan.org/cocoapods/prod/ | grep -oP 'VLCKit-[0-9]+\.[0-9]+\.[0-9]+' | sort -V | uniq)
+
+        # Get the highest version
+        highest_version=$(echo "$versions" | tail -n 1)
+
+        echo "Highest version: $highest_version"
+
+        echo "version=$highest_version" >> $GITHUB_OUTPUT
+
+    - name: Check if the latest VLCKit version is hight than the latest release
+      id: check-newest-version
+      run: |
+        version1=$(echo "${{ steps.latest-vlckit-version.outputs.version }}" | grep -oP '\d+\.\d+\.\d+')
+        version2=${{ steps.latest-release.outputs.release }}
+        if dpkg --compare-versions "$version1" gt "$version2"; then
+            echo "New VLCKit version."
+            echo "should_continue=true" >> $GITHUB_OUTPUT
+            echo "version=$version1" >> $GITHUB_OUTPUT
+        else
+            echo "Nothing new, skipping next steps."
+            echo "should_continue=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download latest versions
+      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      run: |
+        echo "Downloading latest versions"
+
+        base_url="http://download.videolan.org/cocoapods/prod/"
+        version=${{ steps.check-newest-version.outputs.version }}
+        prefixes=("TVVLCKit" "MobileVLCKit" "VLCKit")
+
+        content=$(curl -s "$base_url")
+
+        matching_files=()
+
+        for prefix in "${prefixes[@]}"; do
+          matching_lines=$(echo "$content" | grep -o "<a href=\"$prefix-$version-.*\.tar\.xz\">.*</a>")
+          if [ -n "$matching_lines" ]; then
+            echo "Matching files for $prefix:"
+            matching_line=$(echo "$matching_lines" | sed -n 's/.*>\(.*\)<\/a>/\1/p')
+            echo "$matching_line"
+            matching_files+=("$matching_line")
+          else
+            echo "No matching files found for $prefix."
+          fi
+        done
+
+        for file in "${matching_files[@]}"; do
+            url="${base_url}${file}"
+            echo "Downloading ${url}..."
+            curl -O "${url}"
+            echo "Download $file complete!"
+        done
+
+    - name: Extract and zip .xcframework
+      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      id: zip
+      run: |
+        for file in *.tar.xz; do
+            echo "Untar ${file}..."
+            output_directory=$(echo $file | cut -d'-' -f 1)
+            mkdir $output_directory
+            tar -xJf $file -C $output_directory --strip-components=1
+            output_filename="$output_directory.xcframework.zip"
+            cd $output_directory
+            zip -r -X "$output_filename" "$output_directory.xcframework"
+            checksum=$(swift package compute-checksum "$output_filename")
+            mv $output_filename ../$output_filename
+            cd ..
+            echo "Checksum: $checksum"
+            name="${output_directory}_CHECKSUM"
+            echo "$name=$checksum" >> $GITHUB_OUTPUT
+        done
+
+    - name: Update Package.swift
+      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      run: |
+        new_version=${{ steps.check-newest-version.outputs.version }}
+
+        # Update the Package.swift file
+        sed -i -e "s|url: \"https://github.com/${{ github.repository }}/releases/download/3.5.0/VLCKit.xcframework.zip\",|url: \"https://github.com/${{ github.repository }}/releases/download/${new_version}/VLCKit.xcframework.zip\",|" Package.swift
+        sed -i -e "s|checksum: \"255a326a1cd9ebf8ae8c1b8caff13e3943c3ee22946d02597e89919a4c103d62\"|checksum: \"${{ steps.zip.outputs.VLCKit_CHECKSUM }}\"|" Package.swift
+
+        sed -i -e "s|url: \"https://github.com/${{ github.repository }}/releases/download/3.5.0/MobileVLCKit.xcframework.zip\",|url: \"https://github.com/${{ github.repository }}/releases/download/${new_version}/MobileVLCKit.xcframework.zip\",|" Package.swift
+        sed -i -e "s|checksum: \"f162e277446663d0d90590ded0152df99570970760f6530f36fe776ff4136959\"|checksum: \"${{ steps.zip.outputs.MobileVLCKit_CHECKSUM }}\"|" Package.swift
+
+        sed -i -e "s|url: \"https://github.com/${{ github.repository }}/releases/download/3.5.0/TVVLCKit.xcframework.zip\",|url: \"https://github.com/${{ github.repository }}/releases/download/${new_version}/TVVLCKit.xcframework.zip\",|" Package.swift
+        sed -i -e "s|checksum: \"16ab5dacc617f838767604710e1812c9384e98f636c2e598d0af8e410e4af85f\"|checksum: \"${{ steps.zip.outputs.TVVLCKit_CHECKSUM }}\"|" Package.swift
+
+        echo "Package.swift updated to version ${new_version}"
+
+    - name: Add and commit Package.swift
+      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      uses: EndBug/add-and-commit@v9
+      with:
+        add: 'Package.swift'
+        message: 'Bump Package.swift to version ${{ steps.check-newest-version.outputs.version }}'
+        tag: '${{ steps.check-newest-version.outputs.version }}'
+
+    - name: Create release
+      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+            TVVLCKit.xcframework.zip
+            MobileVLCKit.xcframework.zip
+            VLCKit.xcframework.zip
+        tag_name: ${{ steps.check-newest-version.outputs.version }}
