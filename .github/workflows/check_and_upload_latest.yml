@@ -1,10 +1,8 @@
 name: Check latest versions and update Package.swift
 
 on:
-  push:
-    branch: main
-#  schedule:
-#    - cron: '0 0 * * *'
+  schedule:
+    - cron: '0 0 * * *'
 
 jobs:
   check-versions:
@@ -50,7 +48,7 @@ jobs:
         fi
 
     - name: Download latest versions
-      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      if: ${{ steps.check-newest-version.outputs.should_continue == true }}
       run: |
         echo "Downloading latest versions"
 
@@ -82,7 +80,7 @@ jobs:
         done
 
     - name: Extract and zip .xcframework
-      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      if: ${{ steps.check-newest-version.outputs.should_continue == true }}
       id: zip
       run: |
         for file in *.tar.xz; do
@@ -102,7 +100,7 @@ jobs:
         done
 
     - name: Update Package.swift
-      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      if: ${{ steps.check-newest-version.outputs.should_continue == true }}
       run: |
         new_version=${{ steps.check-newest-version.outputs.version }}
 
@@ -119,7 +117,7 @@ jobs:
         echo "Package.swift updated to version ${new_version}"
 
     - name: Add and commit Package.swift
-      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      if: ${{ steps.check-newest-version.outputs.should_continue == true }}
       uses: EndBug/add-and-commit@v9
       with:
         add: 'Package.swift'
@@ -127,7 +125,7 @@ jobs:
         tag: '${{ steps.check-newest-version.outputs.version }}'
 
     - name: Create release
-      if: ${{ steps.check-newest-version.outputs.should_continue }}
+      if: ${{ steps.check-newest-version.outputs.should_continue == true }}
       uses: softprops/action-gh-release@v1
       with:
         files: |
